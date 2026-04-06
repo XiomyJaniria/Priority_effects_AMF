@@ -651,14 +651,13 @@ annotate_figure(g,
 ##### Richness
 
 ```{r, fig.width=14, fig.height= 10}
-Synchronousd<-filter(data_merge,Treatment %in% c("G1", "G2", "G3"))
-Synchronousdd<-filter(data_merge,Treatment %in% c("G2", "G3")) # for plotting
+Synchronousd<-filter(data_merge,Treatment %in% c("G2", "G3"))
 
-#Block explain 21.6% variance
+#Block explain 15.2% variance
 s5<-lmer(Observed~Treatment*DSE_identity*AMF_identity + (1|Block), data = Synchronousd)
 check_model(s5)
 summary(s5)
-Anova(s5, type = 2) #treatment, DSE_identity, Treatment:DSE_identity, Treatment:AMF_identity
+Anova(s5, type = 2) #treatment, Treatment:DSE_identity, Treatment:AMF_identity
 
 emm5 <- emmeans(s5, ~ DSE_identity)
 pairs(emm5, adjust = "FDR")
