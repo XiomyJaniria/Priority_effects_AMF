@@ -1,29 +1,1653 @@
 ---
-title: "Bacteria_Chapter3"
-output: html_document
-date: "2026-04-06"
+title: "Chapter3_Bacteria"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
 ---
+ <style type="text/css">
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+code.r{
+  font-size: 12px;
+}
+pre {
+  font-size: 10px
+}
+</style>
+
+## 1. Loading packages
+```{r message=FALSE}
+library(ape)
+library(vegan)
+library(plyr)
+library(dplyr)
+library(scales)
+library(grid)
+library(reshape2)
+library(phyloseq)
+library(magrittr)
+library(ggplot2)
+library(ggpubr)
+library(data.table)
+library(tidyverse)
+library(car)
+library(BiocManager)
+library(devtools)
+library(lme4)
+library(performance)
+library(car)
+library(emmeans)
+library(plot3D)
+library(viridis)
 ```
 
-## R Markdown
+## 2. Loading the data
+```{r}
+setwd("/Users/xiomyjaniriapinchidavila/Documents/PHD/Chapter_3/Bacteria/R_files")
+otu <- read.table(file = "final_feature-table_filtered.tsv", sep = "\t", header = T, row.names = 1, 
+                  skip = 1, comment.char = "")
+taxonomy <- read.table(file = "taxonomy.tsv", sep = "\t", header = T ,row.names = 1)
+taxonomy[,2]<-NULL #delete confidence column
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+metadata <- read.table(file = "sample_metadata_R.tsv", sep = "\t", header = T, row.names = 1)
+metadata <- metadata %>%
+  mutate(Treatment_label = case_when(
+    Treatment == "G1" ~ "Early DSE",
+    Treatment == "G2" ~ "Synchronous arrival",
+    Treatment == "G3" ~ "No priority, young",
+    Treatment == "G4" ~ "No priority, old",
+    Treatment == "G5" ~ "Early DSE, no AMF",
+    Treatment == "G6" ~ "No priority, no AMF, young",
+    Treatment == "G7" ~ "No priority, no AMF, old",
+    TRUE ~ as.character(Treatment)))
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+OTU = otu_table(as.matrix(otu), taxa_are_rows = TRUE)
+TAX = tax_table(as.matrix(taxonomy))
+SAMPLE <- sample_data(metadata)
+TREE = read_tree("tree.nwk")
 
-```{r cars}
-summary(cars)
+ps <- phyloseq(OTU, TAX, SAMPLE,TREE)
+ps
+
+
+#remove samples that are from the filter paper
+samples_to_remove <- c("PEBAC221", "PEBAC222", "PEBAC223", "PEBAC224", "PEBAC225", "PEBAC226", "PEBAC227",
+                       "PEBAC228", "PEBAC229", "PEBAC229", "PEBAC230", "PEBAC231", "PEBAC232", "PEBAC233",
+                       "PEBAC234", "PEBAC235", "PEBAC236")
+ps2 <- subset_samples(ps, !(SampleID %in% samples_to_remove))
+ps2
+
+#NEW object with ONLY the removed samples
+ps_removed <- subset_samples(ps, SampleID %in% samples_to_remove)
+ps_removed
 ```
 
-## Including Plots
+## 3. Create rarefaction curve
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+tab <- otu_table(ps2) 
+class(tab) <- "matrix"
+tab <- t(tab)
+rarecurve(tab, step=20, lwd=2, ylab="OTU",  label=F)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## 4. Rarefy to minimum 70819, create rarefaction curve
+```{r}
+sample_sums <- sample_sums(ps2)
+sums<-as.data.frame(sample_sums)
+min(sample_sums) #70819
+max((sample_sums)) #239936
+
+total_reads <- sum(sample_sums(ps2))
+#total_reads 29,912,057
+
+set.seed(111) #keep results reproducible
+ps.rarefied = rarefy_even_depth(ps2, rngseed=1, sample.size=70819, replace=F)
+ps.rarefied
+saveRDS(ps.rarefied, file = "phyloseq_rarefied.rds")
+```
+
+```{r}
+tab2 <- otu_table(ps.rarefied)
+class(tab2) <- "matrix"
+tab2 <- t(tab2)
+rarecurve(tab2, step=20, lwd=2, ylab="OTU",  label=F)
+```
+
+## 5. Alpha diversity analyses
+
+ - shannon: How many kinds & how balanced are they? not very sensitive to dominant species.
+ - simpson: How much do the common ones dominate?, more sensitive if there are taxa that dominates. 
+ - so if a community is not well balanced, simpson will drop more than shannon. although the direction will be the same. but simpson will have a lower value compared to simpson. 
+ 
+### 5.1. Estimate richness
+```{r}
+richness <- estimate_richness(ps.rarefied)
+data_merge <- merge(richness, metadata, 
+                    by = 'row.names', all = TRUE)
+data_merge<-na.omit(data_merge)
+
+data_merge <- data_merge %>%
+  mutate(Pielou = Shannon / log(Observed),
+         Pielou = ifelse(is.finite(Pielou), Pielou, NA_real_))
+```
+
+#### 5.2. Testing if early DSE arrival has an effect in diversity, same approach as in Biomass
+
+- We will test this by comparing treatment G1 vs G3.
+- To test if this effect is truly because of DSE and not AMF, we will compare G1 vs G5.
+- This analysis answer the question: Does DSE early arrival has an effect in bacterial diversity?
+
+##### Shannon diversity
+
+```{r}
+data_merge$Block<-as.factor(data_merge$Block) 
+data_merge$Treatment<-as.factor(data_merge$Treatment)
+
+Early<-filter(data_merge,Treatment %in% c("G1", "G3", "G5"))
+
+#block explain ~ 0% variance
+e1<-lmer(Shannon~Treatment + (1|Block), data = Early) 
+check_model(e1)
+summary(e1)
+Anova(e1, type = 2)
+
+emm <- emmeans(e1, ~ Treatment)
+pairs(emm, adjust = "FDR") 
+```
+
+##### Simpson diversity
+
+```{r}
+#block explain ~ 0% variance
+e2<- lmer(Simpson~Treatment + (1|Block), data=Early)
+check_model(e2)
+summary(e2)
+Anova(e2, type = 2)
+
+emm <- emmeans(e2, ~ Treatment)
+pairs(emm, adjust = "FDR") 
+```
+
+##### Richness
+
+```{r}
+#block explain ~ 5.61% variance
+e3<-lmer(Observed~Treatment + (1|Block), data=Early)
+check_model(e3)
+summary(e3)
+Anova(e3, type = 2)
+
+emm <- emmeans(e3, ~ Treatment)
+pairs(emm, adjust = "FDR") 
+```
+
+##### Pielou
+
+```{r}
+#block explain ~ 0 variance
+e4<-lmer(Pielou~Treatment + (1|Block), data=Early)
+check_model(e4)
+summary(e4)
+Anova(e4, type = 2)
+
+emm <- emmeans(e4, ~ Treatment)
+pairs(emm, adjust = "FDR") 
+```
+
+```{r, fig.width=18, fig.height= 10}
+p1<-ggerrorplot(Early, x="Treatment_label", y="Observed",
+            xlab = "Treatment", 
+            ylab= "Richness",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10)) 
+
+p2<-ggerrorplot(Early, x="Treatment_label", y="Shannon",
+            xlab = "Treatment", 
+            ylab= "Shannon diversity index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10)) 
+
+p3<-ggerrorplot(Early, x="Treatment_label", y="Simpson",
+            xlab = "Treatment", 
+            ylab= "Simpson diversity index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10))
+
+p4<-ggerrorplot(Early, x="Treatment_label", y="Pielou",
+            xlab = "Treatment", 
+            ylab= "Pielou evenness index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10))
+
+g<-ggarrange(p1, p2, p3,p4, 
+          ncol = 2, nrow = 2, 
+          labels = c("A", "B", "C", "D")) 
+annotate_figure(g,
+  top = text_grob("Effect of early DSE arrival, compare G1-G3, G1-G5", face = "bold", size = 14))
+```
+
+
+```{r, fig.width=18, fig.height= 10}
+
+p1<-ggerrorplot(data_merge, x="Treatment_label", y="Observed",
+            xlab = "Treatment", 
+            ylab= "Richness",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10)) 
+
+p2<-ggerrorplot(data_merge, x="Treatment_label", y="Shannon",
+            xlab = "Treatment", 
+            ylab= "Shannon diversity index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10)) 
+
+p3<-ggerrorplot(data_merge, x="Treatment_label", y="Simpson",
+            xlab = "Treatment", 
+            ylab= "Simpson diversity index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10))
+
+p4<-ggerrorplot(data_merge, x="Treatment_label", y="Pielou",
+            xlab = "Treatment", 
+            ylab= "Pielou evenness index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 10))
+
+g<-ggarrange(p1, p2, p3,p4, 
+          ncol = 2, nrow = 2, 
+          labels = c("A", "B", "C", "D")) 
+annotate_figure(g,
+  top = text_grob("Diversity metrics in Bacteria", face = "bold", size = 14))
+```
+
+- G1- G3: sig effect in Shannon/Simpson/Richness/Pielou. In fungi, sig. dif in Shannon/Simpson/Pielou but not in species richness. DSE arriving early decreases diversity and how evenly species are distributed (more uneven). So, it's possible DSE has an inhibitory effect/competitive in other microbes colonizing. Very similar than in fungi. 
+
+- G1-G5: sig. dif. in  Shannon /Simpson/Pielou but not Richness. In fungi, sig dif in Shannon/Simpson/Pielou/richness. This means AMF decreases diversity by making the abundances of species more uneven, not how many different microbes are recruited. So AMF inhibits other microbes. Why? AMF could change root exudates. Competition for plant resources. 
+
+- early DSE arrival affects bacterial richness but not fungal. 
+- Having AMF affects fungal richness but not bacterial richness.
+
+- the overall conclusion is the same in fungi and bacteria. 
+
+
+#### 5.2.1 Does AMF/DSE identity matter in diversity if DSE arrives early?
+
+- comparing G1 Vs G3 in four diversity measures
+
+##### Shannon
+
+```{r, fig.width=14, fig.height= 10}
+Earlyd<-filter(data_merge,Treatment %in% c("G1", "G3"))
+#Block explain ~1.39% of variance 
+e6<-lmer(Shannon~Treatment*DSE_identity*AMF_identity+ (1|Block), data = Earlyd)
+check_model(e6)
+summary(e6)
+Anova(e6, type = 2) # DSE identity, treatment and Treatment:AMF_identity
+
+emm <- emmeans(e6, ~ DSE_identity)
+pairs(emm, adjust = "FDR")
+
+emm <- emmeans(e6, ~ DSE_identity|Treatment)
+pairs(emm, adjust = "FDR")
+
+emm <- emmeans(e6, ~ Treatment*AMF_identity)
+pairs(emm, adjust = "FDR")
+
+mycols <- c("DSE1" = "#007", 
+             "DSE2" = "#D56")
+
+mycols2 <- c("AMF1" = "#0072B2", 
+             "AMF2" = "#D55E00")
+
+a1 <-ggerrorplot(Earlyd, x="Treatment_label", y="Shannon", color = "DSE_identity",
+            palette = mycols,
+            xlab = "Treatment", 
+            ylab= "Shannon diversity index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)) 
+
+
+a2 <-ggerrorplot(Earlyd, x="Treatment_label", y="Shannon", color = "AMF_identity",
+            palette = mycols2,
+            xlab = "Treatment", 
+            ylab= "Shannon diversity index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)) 
+
+g<-ggarrange(a1, a2, 
+          ncol = 2, nrow = 1, 
+          labels = c("A", "B")) 
+annotate_figure(g,
+  top = text_grob("AMF/DSE identity in diversity if DSE arrives early", face = "bold", size = 14))
+
+```
+
+- DSE identity is important, treatment and Treatment:AMF_identity in Shannon diversity.In fungi, only treatment was significant
+- DSE 2 is better than DSE1
+- AMF1 in G1 is better than AMF2 in G1
+- AMF1 in G3 is better than AMF2 in G1
+- AMF2 in G3 is better than AMF2 in G1
+- DSE2 in G3 is better than DSE2 in G1
+
+##### Simpson
+
+```{r, fig.width=14, fig.height= 10}
+#Block explain ~0% of variance 
+e7<-lmer(Simpson~Treatment*DSE_identity*AMF_identity+ (1|Block), data = Earlyd)
+check_model(e7)
+summary(e7)
+Anova(e7, type = 2) # only treatment is significant and Treatment:AMF_identity
+
+emm <- emmeans(e7, ~ Treatment*AMF_identity)
+pairs(emm, adjust = "FDR")
+
+mycols <- c("DSE1" = "#007", 
+             "DSE2" = "#D56")
+
+mycols2 <- c("AMF1" = "#0072B2", 
+             "AMF2" = "#D55E00")
+
+a3 <-ggerrorplot(Earlyd, x="Treatment_label", y="Simpson", color = "AMF_identity",
+            palette = mycols2,
+            xlab = "Treatment", 
+            ylab= "Simpson diversity index",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14))
+
+annotate_figure(a3,
+  top = text_grob("AMF/DSE identity in diversity if DSE arrives early", face = "bold", size = 14))
+
+```
+
+- Treatment and Treatment:AMF_identity is important in Simpson. In fungal only treatment was important. 
+- AMF1 in G1 is better than AMF2 in G1.
+- AMF1 in G3 is better than AMF2 in G1.
+- AMF2 in G3 is better than AMF2 in G1
+
+##### Pielou
+
+```{r, fig.width=14, fig.height= 10}
+#Block explain ~0% of variance 
+e8<-lmer(Pielou~Treatment*DSE_identity*AMF_identity+ (1|Block), data = Earlyd)
+check_model(e8)
+summary(e8)
+Anova(e8, type = 2) # treatment is significant, Treatment:AMF_identity
+
+emm <- emmeans(e8, ~ Treatment*AMF_identity)
+pairs(emm, adjust = "FDR")
+
+mycols <- c("DSE1" = "#007", 
+             "DSE2" = "#D56")
+
+mycols2 <- c("AMF1" = "#0072B2", 
+             "AMF2" = "#D55E00")
+
+a4<-ggerrorplot(Earlyd, x="Treatment_label", y="Pielou", color = "AMF_identity",
+            palette = mycols2,
+            xlab = "Treatment", 
+            ylab= "Pielou evenness index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 14),  
+    axis.title = element_text(size = 14))
+annotate_figure(a4,
+  top = text_grob("AMF/DSE identity in diversity if DSE arrives early", face = "bold", size = 14))
+```
+
+- Treatment and Treatment:AMF_identity is important in Pielou (same as in Simpson). In fungal only treatment was important. 
+- AMF1 in G1 is better than AMF2 in G1.
+- AMF1 in G3 is better than AMF2 in G1.
+- AMF2 in G3 is better than AMF2 in G1
+
+##### Richness
+
+```{r, fig.width=14, fig.height= 10}
+#Block explain ~21.15% of variance 
+e9<-lmer(Observed~Treatment*DSE_identity*AMF_identity+ (1|Block), data = Earlyd)
+check_model(e9)
+summary(e9)
+Anova(e9, type = 2) # treatment is significant, DSE identity, Treatment:AMF_identity
+
+emm <- emmeans(e9, ~ DSE_identity)
+pairs(emm, adjust = "FDR")
+
+emm <- emmeans(e9, ~ DSE_identity|Treatment)
+pairs(emm, adjust = "FDR")
+
+emm <- emmeans(e9, ~ Treatment*AMF_identity)
+pairs(emm, adjust = "FDR")
+
+mycols <- c("DSE1" = "#007", 
+             "DSE2" = "#D56")
+
+mycols2 <- c("AMF1" = "#0072B2", 
+             "AMF2" = "#D55E00")
+
+a5 <-ggerrorplot(Earlyd, x="Treatment_label", y="Observed", color = "DSE_identity",
+            palette = mycols,
+            xlab = "Treatment", 
+            ylab= "Richness",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14))
+
+
+a6 <-ggerrorplot(Earlyd, x="Treatment_label", y="Observed", color = "AMF_identity",
+            palette = mycols2,
+            xlab = "Treatment", 
+            ylab= "Richness",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14))
+
+g<-ggarrange(a5, a6, 
+          ncol = 2, nrow = 1, 
+          labels = c("A", "B")) 
+annotate_figure(g,
+  top = text_grob("AMF/DSE identity in diversity if DSE arrives early", face = "bold", size = 14))
+```
+
+- DSE identity is important, treatment and Treatment:AMF_identity in richness.In fungi, only treatment was signifficant
+- DSE2 in G3 is better than DSE2 in G1.
+- DSE2 in G3 is better than DSE1 in G3
+
+- for AMF*treatment, all pairwise comparison are significant except AMF1 in G1 - AMF1 in G3
+
+##### Does AMF identity matter when we add AMF? 
+
+- we will test in Shannon/Simpson/Pielou. Not sure if this is necessary 
+
+```{r}
+#block does not explain any variance
+sub_G1 <- subset(Early, Treatment == "G1")
+
+#block explains 0%
+m_G1 <- lmer(Shannon ~ AMF_identity + (1|Block), data = sub_G1)
+check_model(m_G1)
+summary(m_G1)
+Anova(m_G1, type = 2)# AMF matters
+emm_m_G1 <- emmeans(m_G1, ~ AMF_identity)
+pairs(emm_m_G1, adjust = "FDR")
+
+#block explain ~0 of variance 
+m_G1_2 <- lmer(Simpson ~ AMF_identity + (1|Block), data = sub_G1)
+check_model(m_G1_2)
+summary(m_G1_2)
+Anova(m_G1_2, type = 2) #AMF matters
+emm_m_G1_2 <- emmeans(m_G1_2, ~ AMF_identity)
+pairs(emm_m_G1_2, adjust = "FDR")
+
+#block explain ~0 of variance 
+m_G1_3 <- lmer(Pielou ~ AMF_identity + (1|Block), data = sub_G1)
+check_model(m_G1_3)
+summary(m_G1_3)
+Anova(m_G1_3, type = 2) #AMF matters
+emm_m_G1_3 <- emmeans(m_G1_3, ~ AMF_identity)
+pairs(emm_m_G1_3, adjust = "FDR")
+```
+
+
+### 5.3 Testing if synchronous arrival has an effect.
+
+- We will test this by comparing treatment G1 vs G2, G2 vs G3.
+- To test if this effect is truly because of DSE and not AMF, we will compare G2 vs G5.
+
+#### 5.3.1 Synchronous arrival effect in diversity
+
+- This analysis answer the question: Does synchronous has an effect in bacterial diversity?
+
+##### Richness
+
+```{r}
+Synchronous<-filter(data_merge,Treatment %in% c("G1","G2","G3", "G5"))
+
+#block explains 14.18% of variance
+s1<-lmer(Observed~Treatment + (1|Block), data = Synchronous)
+check_model(s1)
+summary(s1) 
+Anova(s1, type = 2)
+
+emm1 <- emmeans(s1, ~ Treatment)
+pairs(emm1, adjust = "FDR") 
+
+```
+
+##### Shannon diversity
+
+```{r}
+#block explains 6.69% of variance
+s2<-lmer(Shannon~Treatment + (1|Block), data = Synchronous)
+check_model(s2)
+summary(s2) 
+Anova(s2, type = 2)
+
+emm2 <- emmeans(s2, ~ Treatment)
+pairs(emm2, adjust = "FDR") 
+```
+
+##### Simpson diversity
+
+```{r}
+#block explains 5.82% of variance
+s3<-lmer(Simpson~Treatment + (1|Block), data = Synchronous)
+check_model(s3)
+summary(s3) 
+Anova(s3, type = 2)
+
+emm3 <- emmeans(s3, ~ Treatment)
+pairs(emm3, adjust = "FDR") 
+```
+
+##### Pielou
+
+```{r}
+#block explains 3.38% of variance
+s4<-lmer(Pielou~Treatment + (1|Block), data = Synchronous)
+check_model(s4)
+summary(s4) 
+Anova(s4, type = 2)
+
+emm4 <- emmeans(s4, ~ Treatment)
+pairs(emm4, adjust = "FDR") 
+```
+
+```{r, fig.width=18, fig.height= 10}
+p5<-ggerrorplot(Synchronous, x="Treatment_label", y="Observed",
+            xlab = "Treatment", 
+            ylab= "Richness",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 10),    # Increases the size of axis numbers
+    axis.title = element_text(size = 10)    # Increases the size of axis labels
+  ) 
+
+p6<-ggerrorplot(Synchronous, x="Treatment_label", y="Shannon",
+            xlab = "Treatment", 
+            ylab= "Shannon diversity index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 10),    # Increases the size of axis numbers
+    axis.title = element_text(size = 10)    # Increases the size of axis labels
+  ) 
+
+p7<-ggerrorplot(Synchronous, x="Treatment_label", y="Simpson",
+            xlab = "Treatment", 
+            ylab= "Simpson diversity index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 10),    # Increases the size of axis numbers
+    axis.title = element_text(size = 10)    # Increases the size of axis labels
+  ) 
+
+p8<-ggerrorplot(Synchronous, x="Treatment_label", y="Pielou",
+            xlab = "Treatment", 
+            ylab= "Pielou evenness index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 10),    # Increases the size of axis numbers
+    axis.title = element_text(size = 10)    # Increases the size of axis labels
+  ) 
+
+g<-ggarrange(p5, p6, p7,p8, 
+          ncol = 2, nrow = 2, 
+          labels = c("A", "B", "C", "D")) 
+annotate_figure(g,
+  top = text_grob("Effect of Synchronous arrival, compare G1-G2, G2-G3, G2-G5", face = "bold", size = 14))
+```
+
+- G1-G2: Not sig. dif in richness/Shannon/Simpson/Pielou. In fungi Sig. difference in Shannon/Pielou but not Simpson and richness. So for bacterial communities, inoculating DSE/AMF together early does not have priority effects. It does not matter if we inoculate early together or separate. Even if they compete with each other (DSE/AMF) they don't affect bacterial niches. But G2 is a little less than G1. So AMF may have a small but not significant effect.
+
+- G2-G3: Sig. dif. in richness/Shannon/Simpson/Pielou. In fungi No sig. diff in Richness/Shannon/Simpson/Pielou. All other microbes in the full community (meaning all other bacteria) preempt?  AMF and DSE if arrive 2 weeks ealy, resulting in priority effects? or the difference is because all other microbes in the community have 2 more weeks in the roots, so the diversity and abundance is higher (difference is because more time in host).
+
+- G2-G5: Sig. dif. in Shannon/Simpson/Pielou but not in richness. In fungi Sig. dif in Richness/Shannon/Simpson but not Pielou. Having AMF decreases diversity by decreasing the abundance of species in the community, not the number of species (opposite in fungi). This confirms AMF preempt other species hability to establish in the community (same as un fungi)
+
+
+### 5.3.2 Does AMF/DSE identity matter in diversity when DSE and AMF arrive together?
+
+- Not paying attention to G1-G2 because the general model says no difference 
+- focusing on G2-G3
+
+
+##### Richness
+
+```{r, fig.width=14, fig.height= 10}
+Synchronousd<-filter(data_merge,Treatment %in% c("G1", "G2", "G3"))
+Synchronousdd<-filter(data_merge,Treatment %in% c("G2", "G3")) # for plotting
+
+#Block explain 21.6% variance
+s5<-lmer(Observed~Treatment*DSE_identity*AMF_identity + (1|Block), data = Synchronousd)
+check_model(s5)
+summary(s5)
+Anova(s5, type = 2) #treatment, DSE_identity, Treatment:DSE_identity, Treatment:AMF_identity
+
+emm5 <- emmeans(s5, ~ DSE_identity)
+pairs(emm5, adjust = "FDR")
+
+emm6 <- emmeans(s5, ~ Treatment*DSE_identity)
+pairs(emm6, adjust = "FDR")
+
+emm7 <- emmeans(s5, ~ Treatment*AMF_identity)
+pairs(emm7, adjust = "FDR")
+
+mycols <- c("DSE1" = "#007", 
+             "DSE2" = "#D56")
+
+mycols2 <- c("AMF1" = "#0072B2", 
+             "AMF2" = "#D55E00")
+
+a7 <-ggerrorplot(Synchronousdd, x="Treatment_label", y="Observed", color = "DSE_identity",
+            palette = mycols,
+            xlab = "Treatment", 
+            ylab= "Richness",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 14),  
+    axis.title = element_text(size = 14))
+
+
+a8 <-ggerrorplot(Synchronousdd, x="Treatment_label", y="Observed", color = "AMF_identity",
+            palette = mycols2,
+            xlab = "Treatment", 
+            ylab= "Richness",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 14),  
+    axis.title = element_text(size = 14))
+
+g<-ggarrange(a7, a8, 
+          ncol = 2, nrow = 1, 
+          labels = c("A", "B")) 
+annotate_figure(g,
+  top = text_grob("AMF/DSE identity in diversity if DSE/AMF arrive together", face = "bold", size = 14))
+
+```
+
+- For DSE identity
+- DSE2 is better than DSE1
+
+- For Treatment:DSE
+- DSE2 in G3 is better than DSE1 in G2
+- DSE2 in G3 is better than DSE2 in G2
+- DSE2 in G3 is better than DSE1 in G3
+
+- For Treatment:AMF
+- AMF2 in G3 is better than AMF1 in G2
+- AMF1 in G3 is better than AMF2 in G2
+- AMF2 in G3 is better than AMF2 in G2
+- AMF2 in G3 is better than AMF1 in G3
+
+##### Shannon
+
+```{r}
+#Block explain 11.3% variance
+s6<-lmer(Shannon~Treatment*DSE_identity*AMF_identity + (1|Block), data = Synchronousd)
+check_model(s6)
+summary(s6)
+Anova(s6, type = 2) #DSE identity and Treatment:AMF_identity 
+
+emm8 <- emmeans(s6, ~ DSE_identity)
+pairs(emm8, adjust = "FDR")
+
+emm9 <- emmeans(s6, ~ Treatment*AMF_identity)
+pairs(emm9, adjust = "FDR")
+
+mycols <- c("DSE1" = "#007", 
+             "DSE2" = "#D56")
+
+mycols2 <- c("AMF1" = "#0072B2", 
+             "AMF2" = "#D55E00")
+
+a9 <-ggerrorplot(Synchronousdd, x="Treatment_label", y="Shannon", color = "DSE_identity",
+            palette = mycols,
+            xlab = "Treatment", 
+            ylab= "Shannon diversity index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 14),  
+    axis.title = element_text(size = 14))
+
+
+a10 <-ggerrorplot(Synchronousdd, x="Treatment_label", y="Shannon", color = "AMF_identity",
+            palette = mycols2,
+            xlab = "Treatment", 
+            ylab= "Shannon diversity index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 14),  
+    axis.title = element_text(size = 14))
+
+g<-ggarrange(a9, a10, 
+          ncol = 2, nrow = 1, 
+          labels = c("A", "B")) 
+annotate_figure(g,
+  top = text_grob("AMF/DSE identity in diversity if DSE/AMF arrive together", face = "bold", size = 14))
+```
+
+- For DSE identity
+- DSE2 is better than DSE1
+
+- For Treatment:AMF
+- AMF1 in G3 is better than AMF1 in G2
+- AMF2 in G3 is better than AMF1 in G2
+- AMF1 in G3 is better than AMF2 in G2
+- AMF2 in G3 is better than AMF2 in G2
+
+##### Simpson
+
+```{r, fig.width=14, fig.height= 10}
+#Block explain 8.8% variance
+s7<-lmer(Simpson~Treatment*DSE_identity*AMF_identity + (1|Block), data = Synchronousd)
+check_model(s7)
+summary(s7)
+Anova(s7, type = 2) #treatment, Treatment:AMF_identity, DSE_identity:AMF_identity
+
+emm10 <- emmeans(s7, ~ Treatment*AMF_identity)
+pairs(emm10, adjust = "FDR") 
+
+emm11 <- emmeans(s7, ~ DSE_identity*AMF_identity) #nothing here
+pairs(emm11, adjust = "FDR") 
+
+emm12 <- emmeans(s7, ~ AMF_identity | DSE_identity)
+pairs(emm12, adjust="FDR") #this includes all three treatments, in the plot only G2 and G3
+
+emm13 <- emmeans(s7, ~ DSE_identity | AMF_identity) #this makes more sense according to plots?
+pairs(emm13, adjust="FDR") #this includes all three treatments, in the plot only G2 and G3
+
+mycols <- c("DSE1" = "#007", 
+             "DSE2" = "#D56")
+
+mycols2 <- c("AMF1" = "#0072B2", 
+             "AMF2" = "#D55E00")
+
+p<-ggerrorplot(Synchronousdd, x="Treatment_label", y="Simpson", color = "AMF_identity",
+            palette = mycols2,
+            xlab = "Treatment", 
+            ylab= "Simpson diversity index",
+            size = 1)+
+  labs(title = "DSE/AMF identity if DSE/AMF arrive together") +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.text = element_text(size = 14),  
+    axis.title = element_text(size = 14))
+p
+p + facet_wrap(~DSE_identity)
+
+pp<-ggerrorplot(Synchronousdd, x="Treatment_label", y="Simpson", color = "DSE_identity",
+            palette = mycols,
+            xlab = "Treatment", 
+            ylab= "Simpson diversity index",
+            size = 1)+
+  labs(title = "DSE/AMF identity if DSE/AMF arrive together") +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.text = element_text(size = 14),  
+    axis.title = element_text(size = 14))
+
+pp + facet_wrap(~AMF_identity)
+
+```
+
+- For Treatment:AMF
+- AMF1 in G3 is better than AMF1 in G2
+- AMF2 in G3 is better than AMF1 in G2
+- AMF1 in G3 is better than AMF2 in G2
+- AMF2 in G3 is better than AMF2 in G2
+
+- For DSE_identity*AMF_identity, no specific pairwise comparison
+
+- For AMF_identity | DSE_identity
+-within DSE1, overall AMF1 is better than AMF2 (not looking at treatment)
+-nothing within DSE2
+
+- For DSE_identity | AMF_identity
+- nothing within AMF1
+- within AMF2, DSE2 is better than DSE1
+
+##### Pielou
+
+```{r, fig.width=14, fig.height= 10}
+#Block explain 4.7% variance
+s8<-lmer(Pielou~Treatment*DSE_identity*AMF_identity + (1|Block), data = Synchronousd)
+check_model(s8)
+summary(s8)
+Anova(s8, type = 2) #treatment, Treatment:AMF_identity
+
+emm13 <- emmeans(s8, ~ Treatment*AMF_identity)
+pairs(emm13, adjust = "FDR") 
+
+mycols2 <- c("AMF1" = "#0072B2", 
+             "AMF2" = "#D55E00")
+
+p2 <- ggerrorplot(Synchronousdd, x="Treatment_label", y="Pielou", color="AMF_identity",
+                  palette = mycols2,
+                  xlab = "Treatment",
+                  ylab = "Pielou evenness index",
+                  size = 1) +
+  labs(title = "DSE/AMF identity if DSE/AMF arrive together") +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.text  = element_text(size = 14),
+    axis.title = element_text(size = 14))
+
+p2
+```
+
+- For Treatment:AMF_identity
+- AMF1 in G3 is better than AMF1 in G2
+- AMF2 in G3 is better than AMF1 in G2
+- AMF1 in G3 is better than AMF2 in G2
+- AMF2 in G3 is better than AMF2 in G2
+
+
+##### Does AMF identity matter when we add AMF? 
+
+- we will test in Shannon/Simpson/Pielou. Not sure if this is necessary 
+
+```{r}
+#block does not explain any variance
+Synchronousdd<-filter(data_merge,Treatment %in% c("G2", "G5"))
+sub_G2 <- subset(Synchronousd, Treatment == "G2")
+
+#block explains 28.3%
+m_G2 <- lmer(Shannon ~ AMF_identity + (1|Block), data = sub_G2)
+check_model(m_G2)
+summary(m_G2)
+Anova(m_G2, type = 2)# not important
+
+#block explain ~9.9 of variance 
+m_G2_2 <- lmer(Simpson ~ AMF_identity + (1|Block), data = sub_G2)
+check_model(m_G2_2)
+summary(m_G2_2)
+Anova(m_G2_2, type = 2) #AMF does not matter
+
+#block explain ~15.1 of variance 
+m_G2_3 <- lmer(Pielou ~ AMF_identity + (1|Block), data = sub_G2)
+check_model(m_G2_3)
+summary(m_G2_3)
+Anova(m_G2_3, type = 2) #AMF does not matter
+
+```
+
+- it does not matter the identity of AMF. We just know that it inhibits colonization of other microbes (same as in fungi). 
+
+### 5.4 Testing if host age has an effect and not arrival order.
+
+- We will test this by comparing treatment G3 vs G4 (including AMF), G6 vs G7 (only the DSE)
+- To test if this effect is truly because of plant age and not the AMF, we will compare G3 vs G6, G4 vs G7
+
+#### 5.4.1 Host age in bacterial diversity
+
+- This analysis answer the question: Does host age has an effect in fungal diversity?
+
+##### Richness
+
+```{r}
+Hostage<-filter(data_merge,Treatment %in% c("G3","G4","G6", "G7"))
+
+#block explains ~8.09%
+hs1<-lmer(Observed~Treatment + (1|Block), data = Hostage)
+check_model(hs1)
+summary(hs1) 
+Anova(hs1, type = 2)
+
+emm14 <- emmeans(hs1, ~ Treatment)
+pairs(emm14, adjust = "FDR") 
+```
+
+##### Shannon
+
+```{r}
+#block explains ~5.88%
+hs2<-lmer(Shannon~Treatment + (1|Block), data = Hostage)
+check_model(hs2)
+summary(hs2) 
+Anova(hs2, type = 2)
+
+emm15 <- emmeans(hs2, ~ Treatment)
+pairs(emm15, adjust = "FDR") 
+```
+
+##### Simpson
+
+```{r}
+#block explains ~0%
+hs3<-lmer(Simpson~Treatment + (1|Block), data = Hostage)
+check_model(hs3)
+summary(hs3) 
+Anova(hs3, type = 2)
+
+emm16 <- emmeans(hs3, ~ Treatment)
+pairs(emm16, adjust = "FDR")
+
+```
+
+##### Pielou
+
+```{r}
+#block explains ~0.78%
+hs4<-lmer(Pielou~Treatment + (1|Block), data = Hostage)
+check_model(hs4)
+summary(hs4) 
+Anova(hs4, type = 2)
+
+emm <- emmeans(hs4, ~ Treatment) # is significant but not the combination we want
+pairs(emm, adjust = "FDR") 
+```
+
+
+```{r, fig.width=18, fig.height= 10}
+p9<-ggerrorplot(Hostage, x="Treatment_label", y="Observed",
+            xlab = "Treatment", 
+            ylab= "Richness",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 10),    
+    axis.title = element_text(size = 10)) 
+
+p10<-ggerrorplot(Hostage, x="Treatment_label", y="Shannon",
+            xlab = "Treatment", 
+            ylab= "Shannon diversity index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 10),    
+    axis.title = element_text(size = 10)) 
+
+p11<-ggerrorplot(Hostage, x="Treatment_label", y="Simpson",
+            xlab = "Treatment", 
+            ylab= "Simpson diversity index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 10),  
+    axis.title = element_text(size = 10)) 
+
+p12<-ggerrorplot(Hostage, x="Treatment_label", y="Pielou",
+            xlab = "Treatment", 
+            ylab= "Pielou evenness index",
+            size = 1) +
+  theme(
+    axis.text = element_text(size = 10),   
+    axis.title = element_text(size = 10)) 
+
+g<-ggarrange(p9, p10, p11,p12, 
+          ncol = 2, nrow = 2, 
+          labels = c("A", "B", "C", "D")) 
+annotate_figure(g,
+  top = text_grob("Effect of Host age, compare G3-G4, G6-G7, G3-G7, G7-G4", face = "bold", size = 14))
+```
+
+- G3-G4: not sig.dif in richness/Shannon/Simpson/Pielou. In fungi sig. dif. in Shannon but not in Richness/Simpson/Pielou: Host age has no effect in the relative abundance of species or richness. There is not dominant taxa. all relatively the same. This treatment includes DSE/AMF/full community. 
+
+- G6-G7: Sig. dif. in richness not in Shannon/Simpson/Pielou. In fungi, sig. dif in Richness/Shannon/Simpson/Pielou: when there is not AMF, host age affects only richness. Because more time for more species to colonize roots? But overall, no influence of age in species abundance and evennnes. 
+
+- G3-G6: Sig. dif in richness/Shannon not in Simpson/Pielou. In fungi, sig. dif in Richness/Shannon/Simpson/Pielou. G6 does not have AMF. Having AMF confirms priority effects by AMF, inhibitory (same in fungi) 
+
+- G7-G4: Sig. dif in richness not in Shannon/Simpson/Pielou. In fungi, sig. dif in Richness/Shannon not in Simpson/Pielou. G7 does not have AMF.  
+
+#### 5.4.2 Does AMF/DSE identity matter bacterial diversity?
+
+- Not doing this, because models says no difference. 
+
+## 6. PERMANOVAS
+
+```{r}
+set.seed(20)
+bray <- phyloseq::distance(ps.rarefied, method="bray") #bray distance matrix of abundance
+adonis2(bray ~ sample_data(ps.rarefied)$Treatment, by = "terms", permutations = 1000)
+
+bray_mat <- as.matrix(bray) 
+bray_df <- as.data.frame(as.matrix(bray))
+
+library(pairwiseAdonis)
+
+treat <- factor(metadata$Treatment)
+
+#pairwise.adonis2(bray_df, factors = treat, p.adjust.m = "BH")
+
+library(RVAideMemoire)
+
+fact <- factor(sample_data(ps.rarefied)$Treatment)
+pairwise.perm.manova(bray, fact = fact, nperm = 1000, p.method = "BH")
+
+
+mod1 <- betadisper(bray, phyloseq::sample_data(ps.rarefied)$Treatment)
+mod1
+permutest(mod1, permutations =999)
+
+pair.test.mod1<-permutest(mod1, pairwise = TRUE, permutations = 99) 
+pair.test.mod1
+
+## Extract distances + group from betadisper object
+df_mod1 <- data.frame(
+  Day  = mod1$group,
+  Dist = mod1$distances)
+
+df_mod1 <- df_mod1 %>%
+  mutate(Treatment_label = case_when(
+    Day == "G1" ~ "Early DSE",
+    Day == "G2" ~ "Synchronous arrival",
+    Day == "G3" ~ "No priority, young",
+    Day == "G4" ~ "No priority, old",
+    Day == "G5" ~ "Early DSE, no AMF",
+    Day == "G6" ~ "No priority, no AMF, young",
+    Day == "G7" ~ "No priority, no AMF, old",
+    TRUE ~ as.character(Day)))
+
+
+ggerrorplot(df_mod1, x="Treatment_label", y="Dist",
+            xlab = "Assembly history", 
+            ylab= "Distance to group centroid",
+            size = 1) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 14)) +
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14))
+
+```
+
+```{r}
+nmds.bray <- ordinate(ps.rarefied, method = "NMDS", distance = "bray")
+nmds.bray
+stressplot(nmds.bray)
+
+plot_ordination(ps.rarefied, nmds.bray, color = "Treatment")
+
+nmds1<-plot_ordination(ps.rarefied, nmds.bray, color = "Treatment", shape = "AMF_identity")
+nmds1
+nmds1 + facet_wrap(~DSE_identity)+theme_bw()
+nmds1 + facet_wrap(~AMF_identity)+theme_bw()
+
+nmds2<-plot_ordination(ps.rarefied, nmds.bray, color = "Treatment", shape = "DSE_identity")
+nmds2
+nmds2 + facet_wrap(~AMF_identity)+theme_bw()
+nmds2 + facet_wrap(~DSE_identity)+theme_bw()
+```
+
+## 7. Relative abundance plots
+
+- First instead of having the names out of dada2, lets change the rownames to OTU_001....
+- Then we will separate the taxonomy table in columns
+
+```{r}
+ps_rel<-ps.rarefied
+ps_rel
+tax_table(ps_rel) <- cbind(tax_table(ps_rel),#copies rownames, this variable is called automatically V8
+                                           rownames(tax_table(ps_rel)))
+
+tax_ps_rel<-as.data.frame(tax_table(ps_rel)) #check if worked
+colnames(tax_table(ps_rel)) <-c("Taxonomy", "ASV") #to change V2 to OTU
+taxa_names(ps_rel) <- sprintf("%04d", 1:ntaxa(ps_rel)) #we change row names in taxonomy table to ASV_0001, ASV_0002...
+taxa_names(ps_rel) <- paste("ASV_",taxa_names(ps_rel),sep = "")
+tax_ps_rel<-as.data.frame(tax_table(ps_rel)) #extract tax table to see if worked
+tax_ps_rel2<-subset(tax_ps_rel, select = Taxonomy)
+
+extract_family <- function(tax_string) {
+  taxa <- unlist(strsplit(tax_string, ";"))  # Split taxonomy string
+  
+  # Trim whitespace and extract taxonomic ranks
+  taxa <- trimws(taxa)  
+  family <- taxa[grepl("^f__", taxa)]
+  order <- taxa[grepl("^o__", taxa)]
+  class <- taxa[grepl("^c__", taxa)]
+  phylum <- taxa[grepl("^p__", taxa)]
+
+  # Check if family is available and valid
+  if (length(family) > 0 && family != "f__" && family != "f__ ") {
+    return(sub("f__", "", family))  # Remove prefix
+  }
+  
+  # Fallback to order, class, or phylum if family is missing
+  if (length(order) > 0 && order != "o__" && order != "o__ ") {
+    return(sub("o__", "", order))
+  } else if (length(class) > 0 && class != "c__" && class != "c__ ") {
+    return(sub("c__", "", class))
+  } else if (length(phylum) > 0 && phylum != "p__" && phylum != "p__ ") {
+    return(sub("p__", "", phylum))
+  } else {
+    return("unidentified")  # Default if no classification is found
+  }
+}
+
+# Apply function to extract new names based on family
+new_names <- sapply(tax_ps_rel2$Taxonomy, extract_family)
+
+# Rename row names to include family instead of species
+rownames(tax_ps_rel2) <- paste0(rownames(tax_ps_rel2), "_", new_names)
+
+# Extract the OTU table and update row names
+otu_table <- as.data.frame(otu_table(ps_rel))  # Extract the OTU table
+
+otu_old_names <- rownames(otu_table)  # Original OTU names
+otu_new_names <- rownames(tax_ps_rel2)  # Updated OTU names with family
+
+# Ensure both have the same OTU order before renaming
+if (length(otu_old_names) == length(otu_new_names)) {
+  names(otu_new_names) <- otu_old_names  # Create a named vector mapping
+  rownames(otu_table) <- otu_new_names[rownames(otu_table)]  # Apply new names
+} else {
+  stop("Error: The number of OTUs in otu_table and tax_ps_guilds2 does not match.")
+}
+
+# Verify renaming worked
+identical(rownames(otu_table), rownames(tax_ps_rel2))  # Should return TRUE
+
+
+metadata<-as.data.frame(sample_data(ps_rel)) #extract metadata from ps object
+
+OTU = otu_table(as.matrix(otu_table), taxa_are_rows = TRUE)
+TAX = tax_table(as.matrix(tax_ps_rel2))
+SAMPLE <- sample_data(metadata)
+
+Bacteria<- phyloseq(OTU, TAX, SAMPLE)
+Bacteria
+
+```
+
+- get taxonomy separated
+
+```{r}
+#create a copy of Bacteria
+Bacteria2<-Bacteria
+
+#extract tax table
+tax_table_traits<-as.data.frame(tax_table(Bacteria2))
+
+#Separate in columns
+tax <- tax_table_traits %>%
+  select(Taxonomy) %>%
+  separate(Taxonomy, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = ";")
+
+tax.clean <- data.frame(
+  row.names = row.names(tax),
+  Kingdom = str_replace(tax[,1], "d__", ""),
+  Phylum = str_replace(tax[,2], "p__", ""),
+  Class = str_replace(tax[,3], "c__", ""),
+  Order = str_replace(tax[,4], "o__", ""),
+  Family = str_replace(tax[,5], "f__", ""),
+  Genus = str_replace(tax[,6], "g__", ""),
+  Species = str_replace(tax[,7], "s__", ""),
+  stringsAsFactors = FALSE
+)
+
+tax.clean[is.na(tax.clean)] <- ""
+tax.clean[tax.clean == "__"] <- ""
+
+for (i in 1:nrow(tax.clean)) {
+  if (tax.clean[i, 2] == "") {
+    kingdom <- paste("Unclassified", tax.clean[i, 1], sep = " ")
+    tax.clean[i, 2:7] <- kingdom
+  } else if (tax.clean[i, 3] == "") {
+    phylum <- paste("Unclassified", tax.clean[i, 2], sep = " ")
+    tax.clean[i, 3:7] <- phylum
+  } else if (tax.clean[i, 4] == "") {
+    class <- paste("Unclassified", tax.clean[i, 3], sep = " ")
+    tax.clean[i, 4:7] <- class
+  } else if (tax.clean[i, 5] == "") {
+    order <- paste("Unclassified", tax.clean[i, 4], sep = " ")
+    tax.clean[i, 5:7] <- order
+  } else if (tax.clean[i, 6] == "") {
+    family <- paste("Unclassified", tax.clean[i, 5], sep = " ")
+    tax.clean[i, 6:7] <- family
+  } else if (tax.clean[i, 7] == "") {
+    # If species is missing but genus exists, fill Species with "Unclassified <Genus>"
+    tax.clean$Species[i] <- paste("Unclassified", tax.clean[i, 6], sep = " ")
+  }
+}
+
+tax.clean2 <- as.matrix(tax.clean) #convert to matrix
+tax.clean3 <- tax_table(tax.clean2) #convert to tax table for phyloseq
+tax_table(Bacteria2) <- tax.clean3
+#saveRDS(Bacteria2, file = "Bacteria_ASV00_final.rds") #this has the otus changed to ASV_0001
+```
+
+#### 7.2 Relative abundance plots
+
+```{r}
+#Bac_barplot <- readRDS("Bacteria_ASV00_final.rds")
+#ps_family <- tax_glom(Bac_barplot, taxrank = "Family") #ps object of only genus
+#ps_family
+
+#data_family_type <- psmelt(ps_family) #data frame simplified to genus of abundances
+#data_family_type <- as.data.frame(psmelt(ps_family))
+
+#write_csv(data_family_type, "data_family_type.csv") #calling this is much easier than doing all the above
+
+data_family_type2<-read.csv("data_family_type.csv")
+
+# per-sample relative abundance
+smp_ra <- data_family_type2 %>%
+  group_by(Sample, UniqueTreatment, OTU) %>%
+  summarise(Count = sum(Abundance, na.rm = TRUE), .groups = "drop_last") %>%
+  mutate(RelAbund = 100 * Count / sum(Count)) %>%
+  ungroup()
+
+# average within UniqueTreatment
+grp_ra <- smp_ra %>%
+  group_by(UniqueTreatment, OTU) %>%
+  summarise(mean_RA = mean(RelAbund, na.rm = TRUE),
+            se_RA   = sd(RelAbund, na.rm = TRUE)/sqrt(dplyr::n()),
+            n       = dplyr::n(),
+            .groups = "drop")
+
+# collapse low genera (<4%) AFTER averaging
+thresh <- 4
+grp_ra <- grp_ra %>%
+  mutate(OTU = ifelse(mean_RA < thresh, "Other", as.character(OTU))) %>%
+  group_by(UniqueTreatment, OTU) %>%
+  summarise(mean_RA = sum(mean_RA), .groups = "drop") %>%
+  mutate(OTU = fct_relevel(OTU, "Other", after = Inf))
+
+# x-axis order (use order present in data)
+x_levels <- grp_ra %>%
+  dplyr::distinct(UniqueTreatment) %>%
+  dplyr::mutate(
+    G = as.integer(sub("^G(\\d+)\\..*$", "\\1", UniqueTreatment)),
+    R = as.integer(sub("^G\\d+\\.(\\d+)$", "\\1", UniqueTreatment))
+  ) %>%
+  dplyr::arrange(G, R) %>%
+  dplyr::pull(UniqueTreatment)
+
+grp_ra$UniqueTreatment <- factor(grp_ra$UniqueTreatment, levels = x_levels)
+
+# stacked barplot
+library(pals)
+my_14_colors <- alphabet(26)
+
+p <- ggplot(grp_ra, aes(x = UniqueTreatment, y = mean_RA, fill = OTU)) +
+  geom_col(width = 0.8) +
+  labs(x = NULL, y = "Relative abundance (%)", fill = "Genus/OTU") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.4))
+
+p + scale_fill_manual(values = unname(alphabet(26)))
+
+```
+
+#### 7.3 The barplot of the inoculum
+
+- it may be a good idea to join both phyloseq objects once both have been rarefied, but we need to delete the tree.
+
+```{r}
+sample_sums <- sample_sums(ps_removed)
+sums<-as.data.frame(sample_sums)
+min(sample_sums) #133488, but will rarefied to same number of root samples
+max((sample_sums)) #187660
+
+total_reads <- sum(sample_sums(ps_removed))
+#total_reads 2,621,975
+
+set.seed(111) #keep results reproducible
+ps.rarefied2 = rarefy_even_depth(ps_removed, rngseed=1, sample.size=70819, replace=F)
+ps.rarefied2
+
+ps_rarefied_notree <- phyloseq(otu_table(ps.rarefied), tax_table(ps.rarefied), sample_data(ps.rarefied))
+ps_rarefied_notree
+
+ps_rarefied2_notree <- phyloseq(otu_table(ps.rarefied2), tax_table(ps.rarefied2), sample_data(ps.rarefied2))
+ps_rarefied2_notree
+
+ps_rare_both <- merge_phyloseq(ps_rarefied_notree, ps_rarefied2_notree)
+ps_rare_both
+
+```
+
+- Change dada2 names to ASV_001 of both ps objects
+
+```{r}
+ps_rel<-ps_rare_both
+ps_rel
+
+tax_table(ps_rel) <- cbind(tax_table(ps_rel),#copies rownames, this variable is called automatically V8
+                                           rownames(tax_table(ps_rel)))
+
+tax_ps_rel<-as.data.frame(tax_table(ps_rel)) #check if worked
+colnames(tax_table(ps_rel)) <-c("Taxonomy", "ASV") #to change V2 to OTU
+taxa_names(ps_rel) <- sprintf("%04d", 1:ntaxa(ps_rel)) #we change row names in taxonomy table to ASV_0001, ASV_0002...
+taxa_names(ps_rel) <- paste("ASV_",taxa_names(ps_rel),sep = "")
+tax_ps_rel<-as.data.frame(tax_table(ps_rel)) #extract tax table to see if worked
+tax_ps_rel2<-subset(tax_ps_rel, select = Taxonomy)
+
+extract_family <- function(tax_string) {
+  taxa <- unlist(strsplit(tax_string, ";"))  # Split taxonomy string
+  
+  # Trim whitespace and extract taxonomic ranks
+  taxa <- trimws(taxa)  
+  family <- taxa[grepl("^f__", taxa)]
+  order <- taxa[grepl("^o__", taxa)]
+  class <- taxa[grepl("^c__", taxa)]
+  phylum <- taxa[grepl("^p__", taxa)]
+
+  # Check if family is available and valid
+  if (length(family) > 0 && family != "f__" && family != "f__ ") {
+    return(sub("f__", "", family))  # Remove prefix
+  }
+  
+  # Fallback to order, class, or phylum if family is missing
+  if (length(order) > 0 && order != "o__" && order != "o__ ") {
+    return(sub("o__", "", order))
+  } else if (length(class) > 0 && class != "c__" && class != "c__ ") {
+    return(sub("c__", "", class))
+  } else if (length(phylum) > 0 && phylum != "p__" && phylum != "p__ ") {
+    return(sub("p__", "", phylum))
+  } else {
+    return("unidentified")  # Default if no classification is found
+  }
+}
+
+# Apply function to extract new names based on family
+new_names <- sapply(tax_ps_rel2$Taxonomy, extract_family)
+
+# Rename row names to include family instead of species
+rownames(tax_ps_rel2) <- paste0(rownames(tax_ps_rel2), "_", new_names)
+
+# Extract the OTU table and update row names
+otu_table <- as.data.frame(otu_table(ps_rel))  # Extract the OTU table
+
+otu_old_names <- rownames(otu_table)  # Original OTU names
+otu_new_names <- rownames(tax_ps_rel2)  # Updated OTU names with family
+
+# Ensure both have the same OTU order before renaming
+if (length(otu_old_names) == length(otu_new_names)) {
+  names(otu_new_names) <- otu_old_names  # Create a named vector mapping
+  rownames(otu_table) <- otu_new_names[rownames(otu_table)]  # Apply new names
+} else {
+  stop("Error: The number of OTUs in otu_table and tax_ps_guilds2 does not match.")
+}
+
+# Verify renaming worked
+identical(rownames(otu_table), rownames(tax_ps_rel2))  # Should return TRUE
+
+
+metadata<-as.data.frame(sample_data(ps_rel)) #extract metadata from ps object
+
+OTU = otu_table(as.matrix(otu_table), taxa_are_rows = TRUE)
+TAX = tax_table(as.matrix(tax_ps_rel2))
+SAMPLE <- sample_data(metadata)
+
+Bacteria_both<- phyloseq(OTU, TAX, SAMPLE)
+Bacteria_both
+
+```
+
+- get taxonomy separated in columns of both ps objects
+
+```{r}
+#create a copy of Bacteria_both
+Bacteria2<-Bacteria_both
+
+#extract tax table
+tax_table_traits<-as.data.frame(tax_table(Bacteria2))
+
+#Separate in columns
+tax <- tax_table_traits %>%
+  select(Taxonomy) %>%
+  separate(Taxonomy, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = ";")
+
+tax.clean <- data.frame(
+  row.names = row.names(tax),
+  Kingdom = str_replace(tax[,1], "d__", ""),
+  Phylum = str_replace(tax[,2], "p__", ""),
+  Class = str_replace(tax[,3], "c__", ""),
+  Order = str_replace(tax[,4], "o__", ""),
+  Family = str_replace(tax[,5], "f__", ""),
+  Genus = str_replace(tax[,6], "g__", ""),
+  Species = str_replace(tax[,7], "s__", ""),
+  stringsAsFactors = FALSE
+)
+
+tax.clean[is.na(tax.clean)] <- ""
+tax.clean[tax.clean == "__"] <- ""
+
+for (i in 1:nrow(tax.clean)) {
+  if (tax.clean[i, 2] == "") {
+    kingdom <- paste("Unclassified", tax.clean[i, 1], sep = " ")
+    tax.clean[i, 2:7] <- kingdom
+  } else if (tax.clean[i, 3] == "") {
+    phylum <- paste("Unclassified", tax.clean[i, 2], sep = " ")
+    tax.clean[i, 3:7] <- phylum
+  } else if (tax.clean[i, 4] == "") {
+    class <- paste("Unclassified", tax.clean[i, 3], sep = " ")
+    tax.clean[i, 4:7] <- class
+  } else if (tax.clean[i, 5] == "") {
+    order <- paste("Unclassified", tax.clean[i, 4], sep = " ")
+    tax.clean[i, 5:7] <- order
+  } else if (tax.clean[i, 6] == "") {
+    family <- paste("Unclassified", tax.clean[i, 5], sep = " ")
+    tax.clean[i, 6:7] <- family
+  } else if (tax.clean[i, 7] == "") {
+    # If species is missing but genus exists, fill Species with "Unclassified <Genus>"
+    tax.clean$Species[i] <- paste("Unclassified", tax.clean[i, 6], sep = " ")
+  }
+}
+
+tax.clean2 <- as.matrix(tax.clean) #convert to matrix
+tax.clean3 <- tax_table(tax.clean2) #convert to tax table for phyloseq
+tax_table(Bacteria2) <- tax.clean3
+#saveRDS(Bacteria2, file = "Bacteria_ASV00_final_both.rds") #this has the otus changed to ASV_0001
+```
+
+- Plots, family level
+
+```{r, fig.width=20, fig.height= 10}
+#ASV_barplot <- readRDS("Bacteria_ASV00_final_both.rds")
+#ps_family <- tax_glom(ASV_barplot, taxrank = "Family") #ps object of only genus
+#ps_family
+
+#data_family_type <- psmelt(ps_family) #data frame simplified to genus of abundances
+#data_family_type <- as.data.frame(psmelt(ps_family))
+
+#write_csv(data_family_type, "data_family_type_both.csv") #calling this is much easier than doing all the above
+
+data_family_type2<-read.csv("data_family_type_both.csv")
+
+# per-sample relative abundance by Family
+smp_ra <- data_family_type2 %>%
+  group_by(Sample, UniqueTreatment, Family) %>%
+  summarise(Count = sum(Abundance, na.rm = TRUE), .groups = "drop_last") %>%
+  mutate(RelAbund = 100 * Count / sum(Count)) %>%
+  ungroup()
+
+# average within UniqueTreatment
+grp_ra <- smp_ra %>%
+  group_by(UniqueTreatment, Family) %>%
+  summarise(mean_RA = mean(RelAbund, na.rm = TRUE),
+            se_RA   = sd(RelAbund, na.rm = TRUE)/sqrt(dplyr::n()),
+            n       = dplyr::n(),
+            .groups = "drop")
+
+# collapse low genera (<3%) AFTER averaging
+thresh <- 3
+grp_ra <- grp_ra %>%
+  mutate(Family_collapsed = ifelse(mean_RA < thresh, "Other", as.character(Family))) %>%
+  group_by(UniqueTreatment, Family = Family_collapsed) %>%
+  summarise(mean_RA = sum(mean_RA), .groups = "drop") %>%
+  mutate(Family = fct_relevel(Family, "Other", after = Inf))
+
+# x-axis order (use order present in data)
+x_levels <- grp_ra %>%
+  dplyr::distinct(UniqueTreatment) %>%
+  dplyr::mutate(
+    G = as.integer(sub("^G(\\d+)\\..*$", "\\1", UniqueTreatment)),
+    R = as.integer(sub("^G\\d+\\.(\\d+)$", "\\1", UniqueTreatment))
+  ) %>%
+  dplyr::arrange(G, R) %>%
+  dplyr::pull(UniqueTreatment)
+
+grp_ra$UniqueTreatment <- factor(grp_ra$UniqueTreatment, levels = x_levels)
+
+# stacked barplot
+library(pals)
+Family_levels <- levels(grp_ra$Family)
+pal <- setNames(pals::glasbey(length(Family_levels)), Family_levels)
+
+p <- ggplot(grp_ra, aes(x = UniqueTreatment, y = mean_RA, fill = Family)) +
+  geom_col(width = 0.8) +
+  labs(x = NULL, y = "Mean Relative Abundance (%)", fill = "Family/other < 3%") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.4))
+
+p + scale_fill_manual(values = pal, breaks = names(pal))
+```
+
+```{r, fig.width=20, fig.height= 10}
+#pick the last two levels on the x-axis
+last2 <- c("G8.1","G9.1") 
+
+#add a panel label
+grp_ra_panels <- grp_ra %>%
+  mutate(Panel = ifelse(UniqueTreatment %in% last2,
+                        "Inoculum", "Roots"))
+
+#colorblind-friendly palette for all OTUs in the data
+pal <- pals::glasbey(nlevels(grp_ra_panels$Family))
+names(pal) <- levels(grp_ra_panels$Family)
+
+# 4) plot with two panels; each panel shows only its x values
+p <- ggplot(grp_ra_panels, aes(x = UniqueTreatment, y = mean_RA, fill = Family)) +
+  geom_col(width = 0.8) +
+  facet_grid(~ Panel, scales = "free_x", space = "free_x") +
+  scale_fill_manual(values = pal) +
+  labs(x = NULL, y = "Mean Relative Abundance (%)", fill = "Family/other <3%") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.4),
+        strip.placement = "outside",
+        panel.spacing = unit(1.2, "lines"))
+
+p
+```
+
+- Plots, genus level
+
+
+```{r, fig.width=20, fig.height= 10}
+#ASV_barplot <- readRDS("Bacteria_ASV00_final_both.rds")
+#ps_genus <- tax_glom(ASV_barplot, taxrank = "Genus") #ps object of only genus
+#ps_genus
+
+#data_genus_type <- psmelt(ps_genus) #data frame simplified to genus of abundances
+#data_genus_type <- as.data.frame(psmelt(ps_genus))
+
+#write_csv(data_genus_type, "data_genus_type_both.csv") #calling this is much easier than doing all the above
+
+data_genus_type2<-read.csv("data_genus_type_both.csv")
+
+# per-sample relative abundance
+smp_ra <- data_genus_type2 %>%
+  group_by(Sample, UniqueTreatment, Genus) %>%
+  summarise(Count = sum(Abundance, na.rm = TRUE), .groups = "drop_last") %>%
+  mutate(RelAbund = 100 * Count / sum(Count)) %>%
+  ungroup()
+
+# average within UniqueTreatment
+grp_ra <- smp_ra %>%
+  group_by(UniqueTreatment, Genus) %>%
+  summarise(mean_RA = mean(RelAbund, na.rm = TRUE),
+            se_RA   = sd(RelAbund, na.rm = TRUE)/sqrt(dplyr::n()),
+            n       = dplyr::n(),
+            .groups = "drop")
+
+# collapse low genera (<3%) AFTER averaging
+thresh <- 3
+grp_ra <- grp_ra %>%
+  mutate(Genus_collapsed = ifelse(mean_RA < thresh, "Other", as.character(Genus))) %>%
+  group_by(UniqueTreatment, Genus = Genus_collapsed) %>%
+  summarise(mean_RA = sum(mean_RA), .groups = "drop") %>%
+  mutate(Genus = fct_relevel(Genus, "Other", after = Inf))
+
+# x-axis order (use order present in data)
+x_levels <- grp_ra %>%
+  dplyr::distinct(UniqueTreatment) %>%
+  dplyr::mutate(
+    G = as.integer(sub("^G(\\d+)\\..*$", "\\1", UniqueTreatment)),
+    R = as.integer(sub("^G\\d+\\.(\\d+)$", "\\1", UniqueTreatment))
+  ) %>%
+  dplyr::arrange(G, R) %>%
+  dplyr::pull(UniqueTreatment)
+
+grp_ra$UniqueTreatment <- factor(grp_ra$UniqueTreatment, levels = x_levels)
+
+# stacked barplot
+library(pals)
+gen_levels <- levels(grp_ra$Genus)
+pal <- setNames(pals::glasbey(length(gen_levels)), gen_levels)
+
+p <- ggplot(grp_ra, aes(x = UniqueTreatment, y = mean_RA, fill = Genus)) +
+  geom_col(width = 0.8) +
+  labs(x = NULL, y = "Mean Relative Abundance (%)", fill = "Genus/other <3%") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.4))
+
+p + scale_fill_manual(values = pal, breaks = names(pal))
+```
+
+- Separate the inoculum
+
+```{r, fig.width=20, fig.height= 10}
+last2 <- c("G8.1","G9.1")
+
+grp_ra_panels <- grp_ra %>%
+  mutate(Panel = ifelse(as.character(UniqueTreatment) %in% last2, "Inoculum", "Roots"))
+
+gen_levels <- levels(grp_ra_panels$Genus)
+pal <- setNames(pals::glasbey(length(gen_levels)), gen_levels)
+
+p_panels <- ggplot(grp_ra_panels, aes(UniqueTreatment, mean_RA, fill = Genus)) +
+  geom_col(width = 0.8) +
+  facet_grid(~ Panel, scales = "free_x", space = "free_x") +
+  # drop=TRUE so 'Inoculum' shows only G8.1 & G9.1
+  scale_x_discrete(drop = TRUE) +
+  scale_fill_manual(values = pal, breaks = gen_levels) +
+  labs(x = NULL, y = "Mean Relative Abundance (%)", fill = "Genus / Other <3%") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.4),
+        strip.placement = "outside",
+        panel.spacing = unit(1.2, "lines"))
+p_panels
+```
+
+
