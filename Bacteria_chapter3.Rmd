@@ -684,7 +684,7 @@ a7 <-ggerrorplot(Synchronousdd, x="Treatment_label", y="Observed", color = "DSE_
     axis.title = element_text(size = 14))
 
 
-a8 <-ggerrorplot(Synchronousdd, x="Treatment_label", y="Observed", color = "AMF_identity",
+a8 <-ggerrorplot(Synchronousd, x="Treatment_label", y="Observed", color = "AMF_identity",
             palette = mycols2,
             xlab = "Treatment", 
             ylab= "Richness",
@@ -718,17 +718,11 @@ annotate_figure(g,
 ##### Shannon
 
 ```{r}
-#Block explain 11.3% variance
+#Block explain 18.6% variance
 s6<-lmer(Shannon~Treatment*DSE_identity*AMF_identity + (1|Block), data = Synchronousd)
 check_model(s6)
 summary(s6)
-Anova(s6, type = 2) #DSE identity and Treatment:AMF_identity 
-
-emm8 <- emmeans(s6, ~ DSE_identity)
-pairs(emm8, adjust = "FDR")
-
-emm9 <- emmeans(s6, ~ Treatment*AMF_identity)
-pairs(emm9, adjust = "FDR")
+Anova(s6, type = 2) #only treatment  
 
 mycols <- c("DSE1" = "#007", 
              "DSE2" = "#D56")
@@ -746,7 +740,7 @@ a9 <-ggerrorplot(Synchronousdd, x="Treatment_label", y="Shannon", color = "DSE_i
     axis.title = element_text(size = 14))
 
 
-a10 <-ggerrorplot(Synchronousdd, x="Treatment_label", y="Shannon", color = "AMF_identity",
+a10 <-ggerrorplot(Synchronousd, x="Treatment_label", y="Shannon", color = "AMF_identity",
             palette = mycols2,
             xlab = "Treatment", 
             ylab= "Shannon diversity index",
@@ -762,35 +756,30 @@ annotate_figure(g,
   top = text_grob("AMF/DSE identity in diversity if DSE/AMF arrive together", face = "bold", size = 14))
 ```
 
-- For DSE identity
-- DSE2 is better than DSE1
-
-- For Treatment:AMF
-- AMF1 in G3 is better than AMF1 in G2
-- AMF2 in G3 is better than AMF1 in G2
-- AMF1 in G3 is better than AMF2 in G2
-- AMF2 in G3 is better than AMF2 in G2
-
 ##### Simpson
 
 ```{r, fig.width=14, fig.height= 10}
-#Block explain 8.8% variance
+#Block explain 10.7% variance
 s7<-lmer(Simpson~Treatment*DSE_identity*AMF_identity + (1|Block), data = Synchronousd)
 check_model(s7)
 summary(s7)
-Anova(s7, type = 2) #treatment, Treatment:AMF_identity, DSE_identity:AMF_identity
+Anova(s7, type = 2) #treatment, DSE_identity:AMF_identity, Treatment:DSE_identity:AMF_identity
 
-emm10 <- emmeans(s7, ~ Treatment*AMF_identity)
-pairs(emm10, adjust = "FDR") 
-
+ 
 emm11 <- emmeans(s7, ~ DSE_identity*AMF_identity) #nothing here
 pairs(emm11, adjust = "FDR") 
 
 emm12 <- emmeans(s7, ~ AMF_identity | DSE_identity)
-pairs(emm12, adjust="FDR") #this includes all three treatments, in the plot only G2 and G3
+pairs(emm12, adjust="FDR") #nothing here
 
-emm13 <- emmeans(s7, ~ DSE_identity | AMF_identity) #this makes more sense according to plots?
+emm13 <- emmeans(s7, ~ DSE_identity | AMF_identity) #nothing here
 pairs(emm13, adjust="FDR") #this includes all three treatments, in the plot only G2 and G3
+
+emm14 <- emmeans(s7, ~ Treatment*DSE_identity*AMF_identity)
+pairs(emm14, adjust="FDR") 
+
+emm15 <- emmeans(s7, ~ Treatment*DSE_identity |AMF_identity ) #this makes more sense?
+pairs(emm15, adjust="FDR") 
 
 mycols <- c("DSE1" = "#007", 
              "DSE2" = "#D56")
@@ -798,7 +787,7 @@ mycols <- c("DSE1" = "#007",
 mycols2 <- c("AMF1" = "#0072B2", 
              "AMF2" = "#D55E00")
 
-p<-ggerrorplot(Synchronousdd, x="Treatment_label", y="Simpson", color = "AMF_identity",
+p<-ggerrorplot(Synchronousd, x="Treatment_label", y="Simpson", color = "AMF_identity",
             palette = mycols2,
             xlab = "Treatment", 
             ylab= "Simpson diversity index",
@@ -811,7 +800,7 @@ p<-ggerrorplot(Synchronousdd, x="Treatment_label", y="Simpson", color = "AMF_ide
 p
 p + facet_wrap(~DSE_identity)
 
-pp<-ggerrorplot(Synchronousdd, x="Treatment_label", y="Simpson", color = "DSE_identity",
+pp<-ggerrorplot(Synchronousd, x="Treatment_label", y="Simpson", color = "DSE_identity",
             palette = mycols,
             xlab = "Treatment", 
             ylab= "Simpson diversity index",
@@ -826,38 +815,45 @@ pp + facet_wrap(~AMF_identity)
 
 ```
 
-- For Treatment:AMF
-- AMF1 in G3 is better than AMF1 in G2
-- AMF2 in G3 is better than AMF1 in G2
-- AMF1 in G3 is better than AMF2 in G2
-- AMF2 in G3 is better than AMF2 in G2
+- for all three way interaction:
+G3 DSE1 AMF1 - G2 DSE2 AMF1  0.023769 0.00759 62.0   3.131  0.0106
+G3 DSE1 AMF1 - G2 DSE1 AMF2  0.020824 0.00759 62.0   2.743  0.0278
+G2 DSE2 AMF1 - G3 DSE2 AMF1 -0.027984 0.00759 62.0  -3.686  0.0034
+G2 DSE2 AMF1 - G3 DSE1 AMF2 -0.028716 0.00759 62.0  -3.782  0.0033
+G2 DSE2 AMF1 - G3 DSE2 AMF2 -0.032128 0.00759 62.0  -4.232  0.0022
+G3 DSE2 AMF1 - G2 DSE1 AMF2  0.025039 0.00759 62.0   3.298  0.0075
+G2 DSE1 AMF2 - G3 DSE1 AMF2 -0.025771 0.00759 62.0  -3.394  0.0067
+G2 DSE1 AMF2 - G3 DSE2 AMF2 -0.029183 0.00759 62.0  -3.844  0.0033
 
-- For DSE_identity*AMF_identity, no specific pairwise comparison
+- when doing within AMF1
+- DSE1 in G3 is better than DSE2 in G2
+- DSE2 in G3 is better than DSE2 in G2
 
-- For AMF_identity | DSE_identity
--within DSE1, overall AMF1 is better than AMF2 (not looking at treatment)
--nothing within DSE2
-
-- For DSE_identity | AMF_identity
-- nothing within AMF1
-- within AMF2, DSE2 is better than DSE1
+- when doing within AMF2
+- DSE2 in G3 is better than DSE1 in G2
 
 ##### Pielou
 
 ```{r, fig.width=14, fig.height= 10}
-#Block explain 4.7% variance
+#Block explain 14.1% variance
 s8<-lmer(Pielou~Treatment*DSE_identity*AMF_identity + (1|Block), data = Synchronousd)
 check_model(s8)
 summary(s8)
-Anova(s8, type = 2) #treatment, Treatment:AMF_identity
+Anova(s8, type = 2) #treatment, Treatment:DSE_identity:AMF_identity
 
-emm13 <- emmeans(s8, ~ Treatment*AMF_identity)
-pairs(emm13, adjust = "FDR") 
+emm16 <- emmeans(s8, ~ Treatment*DSE_identity*AMF_identity)
+pairs(emm16, adjust = "FDR") 
+
+emm17 <- emmeans(s8, ~ Treatment*DSE_identity |AMF_identity ) #this makes more sense?
+pairs(emm17, adjust="FDR") 
+
+mycols <- c("DSE1" = "#007", 
+             "DSE2" = "#D56")
 
 mycols2 <- c("AMF1" = "#0072B2", 
              "AMF2" = "#D55E00")
 
-p2 <- ggerrorplot(Synchronousdd, x="Treatment_label", y="Pielou", color="AMF_identity",
+p2 <- ggerrorplot(Synchronousd, x="Treatment_label", y="Pielou", color="AMF_identity",
                   palette = mycols2,
                   xlab = "Treatment",
                   ylab = "Pielou evenness index",
@@ -869,14 +865,44 @@ p2 <- ggerrorplot(Synchronousdd, x="Treatment_label", y="Pielou", color="AMF_ide
     axis.title = element_text(size = 14))
 
 p2
+
+p3<-ggerrorplot(Synchronousd, x="Treatment_label", y="Pielou", color = "DSE_identity",
+            palette = mycols,
+            xlab = "Treatment", 
+            ylab= "Simpson diversity index",
+            size = 1)+
+  labs(title = "DSE/AMF identity if DSE/AMF arrive together") +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.text = element_text(size = 14),  
+    axis.title = element_text(size = 14))
+
+p3 + facet_wrap(~AMF_identity)
 ```
 
-- For Treatment:AMF_identity
-- AMF1 in G3 is better than AMF1 in G2
-- AMF2 in G3 is better than AMF1 in G2
-- AMF1 in G3 is better than AMF2 in G2
-- AMF2 in G3 is better than AMF2 in G2
+- When doing the 3-way interaction
+G2 DSE1 AMF1 - G3 DSE2 AMF1 -0.040736 0.0155 62.4  -2.623  0.0301
+G2 DSE1 AMF1 - G3 DSE1 AMF2 -0.035970 0.0155 62.4  -2.316  0.0477
+G2 DSE1 AMF1 - G3 DSE2 AMF2 -0.040285 0.0155 62.4  -2.594  0.0301
+G3 DSE1 AMF1 - G2 DSE2 AMF1  0.035683 0.0151 62.0   2.367  0.0477
+G3 DSE1 AMF1 - G2 DSE1 AMF2  0.041854 0.0151 62.0   2.777  0.0290
+G2 DSE2 AMF1 - G3 DSE2 AMF1 -0.059875 0.0151 62.0  -3.972  0.0012
+G2 DSE2 AMF1 - G3 DSE1 AMF2 -0.055110 0.0151 62.0  -3.656  0.0025
+G2 DSE2 AMF1 - G3 DSE2 AMF2 -0.059425 0.0151 62.0  -3.942  0.0012
+G3 DSE2 AMF1 - G2 DSE1 AMF2  0.066046 0.0151 62.0   4.381  0.0007
+G2 DSE1 AMF2 - G3 DSE1 AMF2 -0.061280 0.0151 62.0  -4.065  0.0012
+G2 DSE1 AMF2 - G3 DSE2 AMF2 -0.065596 0.0151 62.0  -4.352  0.0007
+G2 DSE2 AMF2 - G3 DSE2 AMF2 -0.039537 0.0151 62.0  -2.623  0.0301
 
+- within AMF1
+- DSE2 in G3 is better than DSE1 in G2
+- DSE2 in G3 is better than DSE2 in G2
+
+- within AMF2
+- DSE1 in G3 is better than DSE1 in G2
+- DSE1 in G3 is better than DSE2 in G2
+- DSE2 in G3 is better than DSE1 in G2
+- DSE2 in G3 is better than DSE2 in G2
 
 ##### Does AMF identity matter when we add AMF? 
 
@@ -923,7 +949,7 @@ Anova(m_G2_3, type = 2) #AMF does not matter
 ```{r}
 Hostage<-filter(data_merge,Treatment %in% c("G3","G4","G6", "G7"))
 
-#block explains ~8.09%
+#block explains ~7.5%
 hs1<-lmer(Observed~Treatment + (1|Block), data = Hostage)
 check_model(hs1)
 summary(hs1) 
@@ -936,7 +962,7 @@ pairs(emm14, adjust = "FDR")
 ##### Shannon
 
 ```{r}
-#block explains ~5.88%
+#block explains ~5.6%
 hs2<-lmer(Shannon~Treatment + (1|Block), data = Hostage)
 check_model(hs2)
 summary(hs2) 
@@ -1558,7 +1584,6 @@ p
 ```
 
 - Plots, genus level
-
 
 ```{r, fig.width=20, fig.height= 10}
 #ASV_barplot <- readRDS("Bacteria_ASV00_final_both.rds")
