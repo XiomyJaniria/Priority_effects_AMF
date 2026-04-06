@@ -46,7 +46,6 @@ library(viridis)
 
 ## 2. Loading the data
 ```{r}
-setwd("/Users/xiomyjaniriapinchidavila/Documents/PHD/Chapter_3/Bacteria/R_files")
 otu <- read.table(file = "final_feature-table_filtered.tsv", sep = "\t", header = T, row.names = 1, 
                   skip = 1, comment.char = "")
 taxonomy <- read.table(file = "taxonomy.tsv", sep = "\t", header = T ,row.names = 1)
