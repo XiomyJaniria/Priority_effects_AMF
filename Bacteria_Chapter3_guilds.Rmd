@@ -1,0 +1,168 @@
+---
+title: "Bacteria_chapter3_guilds"
+output: html_document
+date: "2026-06-02"
+editor_options: 
+  chunk_output_type: console
+---
+
+## 1. Loading packages
+```{r message=FALSE}
+library(ape)
+library(vegan)
+library(plyr)
+library(dplyr)
+library(scales)
+library(grid)
+library(reshape2)
+library(phyloseq)
+library(magrittr)
+library(ggplot2)
+library(ggpubr)
+library(data.table)
+library(tidyverse)
+library(car)
+library(BiocManager)
+library(devtools)
+library(lme4)
+library(performance)
+library(car)
+library(emmeans)
+library(viridis)
+```
+
+## 2. Loading the data
+```{r}
+ps<-readRDS("Bacteria_ASV00_final.rds")
+```
+
+## 3. Get data ready for phyton script
+
+```{r}
+# OTU table
+otu <- as.data.frame(otu_table(ps))
+tax <- as.data.frame(tax_table(ps))
+
+# Make taxonomy all together again
+tax$taxonomy <- apply(tax, 1, function(x) {
+  x <- x[!is.na(x)]          
+  x <- x[x != ""]           
+  paste(x, collapse = ";")
+})
+
+# Add taxonomy column and OTU_ID to OTU table
+otu$taxonomy <- tax$taxonomy[match(rownames(otu), rownames(tax))]
+otu$OTU_ID <- rownames(otu)
+
+# Put OTU_ID and taxonomy first
+otu_faprotax <- otu %>%
+  select(OTU_ID, taxonomy, everything())
+
+# Export
+write.table(
+  otu_faprotax,
+  file = "otu_table_taxonomy_faprotax.tsv",
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE)
+```
+
+## 4. Analyze output from faprotax
+
+```{r}
+fapro <- read.table(
+  "functional_otu_table.tsv",
+  header = TRUE,
+  sep = "\t",
+  check.names = FALSE)
+
+#convert to long format
+fapro_long <- fapro %>%
+  pivot_longer(
+    cols = -group,
+    names_to = "Sample",
+    values_to = "Abundance")
+
+#extract metadata from phyloseq object
+metadata<-data.frame(sample_data(ps))
+
+#change the traetment label
+metadata <- metadata %>%
+  mutate(
+    Sample = rownames(metadata),
+    Treatment_label = case_when(
+      Treatment == "G1" ~ "Early DSE",
+      Treatment == "G2" ~ "Synchronous arrival",
+      Treatment == "G3" ~ "No priority, young",
+      Treatment == "G4" ~ "No priority, old",
+      Treatment == "G5" ~ "Early DSE, no AMF",
+      Treatment == "G6" ~ "No priority, no AMF, young",
+      Treatment == "G7" ~ "No priority, no AMF, old",
+      TRUE ~ as.factor(Treatment)))
+
+#join metadata and faprotax
+fapro_final <- left_join(fapro_long, metadata, by = "Sample")
+
+#get relative abundance
+fapro_rel <- fapro_final %>%
+  group_by(Sample) %>%
+  mutate(
+    RelativeAbundance = Abundance / sum(Abundance, na.rm = TRUE) * 100) %>%
+  ungroup()
+
+# Relative abundance per sample
+group_ra <- fapro_rel %>%
+  group_by(Treatment_label, group) %>%
+  summarise(
+    mean_RA = mean(RelativeAbundance, na.rm = TRUE),
+    se_RA   = sd(RelativeAbundance, na.rm = TRUE) / sqrt(dplyr::n()),
+    n       = dplyr::n(),
+    .groups = "drop")
+
+#collapse others
+thresh <- .5
+
+group_ra <- group_ra %>%
+  mutate(
+    group_collapsed = ifelse(mean_RA < thresh, "Other", as.character(group))) %>%
+  group_by(Treatment_label, group = group_collapsed) %>%
+  summarise(
+    mean_RA = sum(mean_RA, na.rm = TRUE),
+    .groups = "drop") %>%
+  mutate(
+    group = fct_relevel(group, "Other", after = Inf))
+
+#order the labels
+x_levels <- c(
+  "Early DSE",
+  "Synchronous arrival",
+  "No priority, young",
+  "No priority, old",
+  "Early DSE, no AMF",
+  "No priority, no AMF, young",
+  "No priority, no AMF, old")
+
+group_ra$Treatment_label <- factor(group_ra$Treatment_label, levels = x_levels)
+
+group_levels <- levels(group_ra$group)
+pal <- setNames(pals::polychrome(length(group_levels)), group_levels)
+
+p_fapro <- ggplot(group_ra, aes(x = Treatment_label, y = mean_RA, fill = group)) +
+  geom_col(width = 0.8) +
+  scale_fill_manual(values = pal, breaks = names(pal)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 12)) +
+  labs(
+    x = NULL,
+    y = "Mean Relative Abundance (%)",
+    fill = "FAPROTAX group/Other <1%" ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.4))
+
+p_fapro
+```
+
+## 5. Extract nitrogen fixers
+
+
